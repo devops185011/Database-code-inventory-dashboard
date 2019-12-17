@@ -1,0 +1,87 @@
+#!/bin/bash
+
+
+#path of local machine where final output will be saved
+localDir="/home/oracle/test"
+
+#path where serverlist is kept in local machine
+serverList="$localDir/serverlist.txt"
+
+#path of the local script which fetched all datas details from all the servers
+localScriptPath="$localDir/inventory_info.sh"
+
+#remote out path where output.csv is created
+
+remoteDir="/home/oracle/test/demo/output.csv"
+
+
+mailSub="Oracle inventory output"
+mailId="kanchan.u@hcl.com"
+
+
+#############################################################################
+
+#if finaloutput.csv already exists then delete it
+
+if [ -f $localDir/finalOutput.csv ] ; then
+    rm $localDir/finalOutput.csv
+fi
+
+###############################################################################
+
+
+today=`date +%Y-%m-%d`
+log="$today""Log.txt"
+
+###############################################################################
+
+
+echo "ServerName","OS","DBname","DBverion","DBsize(in GB)","actualUndoSize(in bytes)","maxUndoSize (in bytes)","UndoBlockPerSec(in bytes)","BlockSize(in bytes)","OptimalUndoRetetionPeriod">> $localDir/finalOutput.csv
+
+var=0
+for server in `cat $serverList`
+do
+
+ping -q -c2 $server > /dev/null
+
+if [ $? -eq 0 ]
+then
+echo $server "Pingable"
+var=$((var+ 1))
+
+fileName="$var"".csv"
+ssh oracle@$server 'bash -s' < $localScriptPath
+
+if [ -f $localDir/$fileName ] ; then
+    rm $localDir/$fileName
+fi
+
+
+### copying output from remote machine to local path
+
+scp -r oracle@$server:$remoteDir $localDir/"$fileName"
+
+cat $fileName >> $localDir/finalOutput.csv
+
+ 
+if [ -f $localDir/$fileName ] ; then
+    rm $localDir/$fileName
+fi
+
+
+else
+if [ -f $localDir/$log ] ; then
+    rm $localDir/$log
+fi
+systemTime=`date +"%H:%M:%S"`
+echo "$systemTime">> $localDir/$log
+echo $server "Not Pingable" >> $localDir/$log
+fi
+
+
+done
+
+
+
+#mail 
+#uuencode $localDir/finalOutput.csv finalOutput.csv | mail -s "$mailSub" "$mailId"

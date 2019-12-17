@@ -1,0 +1,235 @@
+#!/bin/bash
+
+###############################################################################################
+## userName and uerPassword to connect to sqlplus database
+userName="system"
+userPass=""
+userPass="oracle"
+
+## Name of Remote path where outputfile will be saved
+remoteDir="/home/oracle/test/demo"  #(where output.csv is kept , e.g. /home/oracle)
+
+[ -d $remoteDir ] || mkdir -p $remoteDir
+
+## Name of final output file
+outputFile="$remoteDir/output.csv"
+
+## Name of Path of where oratab file exists
+
+oradbFile="/var/opt/oracle/oratab"
+
+###############################################################################################
+
+
+
+## if output file already exist then remove it
+if [ -f $outputFile ] ; then
+    rm $outputFile
+fi
+
+oradbPath="$remoteDir/oradblist.txt"
+if [ -f $oradbPath ] ; then
+    rm $oradbPath
+fi
+
+
+##echo "ServerName","OS","DBname","DBverion","DBsize(in GB)","actualUndoSize(in bytes)","maxUndoSize (in bytes)","UndoBlockPerSec(in bytes)","BlockSize(in bytes)","OptimalUndoRetetionPeriod">> $outputFile
+
+
+## grep oratab entries in another file to capture database name and oracle sid
+
+cat $oradbFile|grep '^[[:blank:]]*[^[:blank:]#;]' >> $oradbPath
+chmod 777 $oradbPath
+
+## connecting to the remote host
+
+##for server in `cat $servers` ; do echo $server;
+#
+server=$(hostname)
+
+## fetch os name
+osVersion=$(uname)
+
+## connecting to remotehost databases
+
+for i in `cat $oradbPath`;
+do
+orname=$(echo $i|awk -F '[:]' '{print $1}')
+
+orHome=$(echo $i|awk -F '[:]' '{print $2}')
+
+
+pslist="`ps -ef | grep pmon`"
+
+  echo  "$pslist" | grep  "ora_pmon_$orname"  > /dev/null
+  if (( $? )); then
+        echo "Oracle Instance - $orname:       Down" 
+continue
+  else
+        echo "Oracle Instance - $orname:       Up"
+ 
+
+
+
+echo "---> Database $orname using home $orHome"
+
+
+###############################################################################################
+## Database Name
+export ORACLE_SID=$orname
+export ORACLE_HOME=$orHome
+export PATH=$ORACLE_HOME/bin:$PATH
+
+dbname=$(sqlplus -s /nolog << EOF
+connect $userName/$userPass@$orname
+
+set serveroutput on
+set heading off
+set feedback off
+select name from v\$database;
+exit;
+EOF)
+dname=$(echo $dbname| tr -d '')
+echo "dbname: $dname "
+
+
+###############################################################################################
+## Database Size
+
+export ORACLE_SID=$orname
+export ORACLE_HOME=$orHome
+export PATH=$ORACLE_HOME/bin:$PATH
+
+dbsize=$(sqlplus -s /nolog << EOF
+connect $userName/$userPass@$orname
+set serveroutput on
+set heading off
+set feedback off
+select round(sum(Gig),2) Gig from ( select sum(bytes)/(1024*1024*1024) Gig from dba_data_files union select sum(bytes)/(1024*1024*1024) Gig from dba_temp_files union select sum(v\$log.bytes)/(1024*1024*1024) Gig from v\$log, v\$logfile where v\$log.group# = v\$logfile.group# );
+exit;
+EOF)
+dsize=$(echo $dbsize| tr -d '')
+echo "dbsize: $dsize"
+
+
+###############################################################################################
+###Database Version
+
+export ORACLE_SID=$orname
+export ORACLE_HOME=$orHome
+export PATH=$ORACLE_HOME/bin:$PATH
+
+dbversion=$(sqlplus -s /nolog << EOF
+connect $userName/$userPass@$orname
+set serveroutput on
+set heading off
+set feedback off
+SELECT version FROM V\$INSTANCE;
+exit;
+EOF)
+dversion=$(echo $dbversion| tr -d '')
+echo "dbversion: $dversion"
+
+###############################################################################################
+## actualUndoSize
+
+export ORACLE_SID=$orname
+export ORACLE_HOME=$orHome
+export PATH=$ORACLE_HOME/bin:$PATH
+
+actualUndoSize=`sqlplus -s /nolog << EOF
+connect $userName/$userPass@$orname
+set serveroutput on
+set heading off
+set feedback off
+select to_char(sum(bytes)) from dba_data_files where tablespace_name like '%UNDO%';
+exit;
+EOF`
+aUndoSize=$(echo $actualUndoSize| tr -d '')
+echo "actualUndoSize: $aUndoSize "
+
+
+###############################################################################################
+## maxUndoSize
+
+export ORACLE_SID=$orname
+export ORACLE_HOME=$orHome
+export PATH=$ORACLE_HOME/bin:$PATH
+
+maxUndoSize=`sqlplus -s /nolog << EOF
+connect $userName/$userPass@$orname
+set serveroutput on
+set heading off
+set feedback off
+select to_char(sum(maxbytes)) from dba_data_files where tablespace_name like '%UNDO%';
+exit;
+EOF`
+mUndoSize=$(echo $actualUndoSize| tr -d '')
+echo "maxUndoSize: $mUndoSize "
+
+
+###############################################################################################
+## Undo block per second
+
+export ORACLE_SID=$orname
+export ORACLE_HOME=$orHome
+export PATH=$ORACLE_HOME/bin:$PATH
+
+undoBlock=$(sqlplus -s /nolog << EOF
+connect $userName/$userPass@$orname
+set serveroutput on
+set heading off
+set feedback off
+SELECT MAX(undoblks/((end_time-begin_time)*3600*24))
+      "UNDO_BLOCK_PER_SEC"
+  FROM v\$undostat;
+exit;
+EOF)
+uBlock=$(echo $undoBlock| tr -d '')
+echo "UndoBlock: $uBlock"
+
+###############################################################################################
+## Block size used in the database
+
+export ORACLE_SID=$orname
+export ORACLE_HOME=$orHome
+export PATH=$ORACLE_HOME/bin:$PATH
+
+dbBlockSize=$(sqlplus -s /nolog << EOF
+connect $userName/$userPass@$orname
+set serveroutput on
+set heading off
+set feedback off
+select distinct bytes/blocks from user_segments;
+exit;
+EOF)
+dBlockSize=$(echo $undoBlock| tr -d '')
+echo "dbBlockSize: $dBlockSize"
+
+
+
+###############################################################################################
+## calculate optimal undo retention period
+##Actual Undo Size / db_block_size * undo_block_per_sec
+
+undoRetention=`echo "$aUndoSize / $dBlockSize * $uBlock" | bc`
+echo "Undo Retention Period : $undoRetention"
+
+
+###############################################################################################
+## putting all details in output file
+
+echo "$server","$osVersion","$dname","$dversion","$dsize","$aUndoSize","$mUndoSize","$uBlock","$dBlockSize","$undoRetention" >> $outputFile
+
+
+
+
+## End of for loop of remote host databases
+ fi
+done
+
+oradbPath="$remoteDir/oradblist.txt"
+if [ -f $oradbPath ] ; then
+    rm $oradbPath
+fi
+
